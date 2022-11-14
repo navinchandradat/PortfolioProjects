@@ -1,0 +1,475 @@
+---
+title: "NFL Project Report"
+author: "Navin Chandradat"
+date: "12/5/2019"
+output:
+  pdf_document: default
+  html_document: default
+  word_document: default
+---
+
+## Introduction
+For 100 seasons teams in the NFL have tried to win as many games as possible in the regular season to put themselves in a better position to ultimately win the Lombardi trophy. This is because the more games you win the higher you are seeded before heading into the playoffs and since the higher seed is always matched up with a lower seeded team this, in theory, should give you a better chance to win. So for our analysis we are going to look at it from two different angles, first which regular season statistics could impact how far you make it in the playoffs? And does your regular season record acurately relfect how strong you are going in to the playoffs? These two questions seem to accurately capture what we want to explore because 1) when you go into a football game you hope to either stop the oppositions rush attack or pass attack and make them easier to figure out on defene and 2) sometimes a regular season record doens't tell the whole story of how strong a team is, they could potentially play in an easy division which has teams that had consecutive poor records or major injuries in the years prior.
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#Loading Libraries
+#rm(list = ls())
+
+library(tidyverse)
+
+library(rvest)
+
+library(broom)
+```
+
+## Methods
+
+In order to do our analysis we needed several pieces of data. What we want is for the previous 2018 season we wanted the regular season statistics for all 32 teams. Now this data is readily available on almost all sports sites so in order to get it into R to be usable we needed to scrap it from one of the many sites. The site that was decided upon was ESPN.com and the package that made it possible was rvest.
+
+```{r, warning=FALSE}
+off_stats_2018 <- html("https://www.espn.com/nfl/stats/team/_/season/2018/seasontype/2")
+off_stats_2018 %>% html_nodes("table") %>% 
+   .[[2]] %>%
+  
+  html_table(fill=TRUE) -> off_stats_2018.df
+```
+
+
+When the data got read in, we lost the team names but we can just bind a column of the names to the existing table.
+```{r}
+off_teams <- c(" ","KC", "LAR", "TB", "PIT", "NE", "ATL", "IND", "NO", "BAL", "CAR", "LAC", "GB", "CLE", "PHI", "HOU", "SF", "NYG", "SEA", "DEN", "MIN", "CHI", "DAL", "OAK", "DET", "TEN", "CIN", "JAX", "WSH", "NYJ", "BUF", "MIA", "ARI")
+
+off_stats_2018.df %>% cbind(off_teams) -> off_stats_2018.df
+
+off_stats_2018.df
+```
+
+
+Even though we have all the information that was on the website, because of the way it was processed some variables ended up having the same name. Which can be a problem for the package(s) we are going to employ for the analysis. Since we wanted to make the table a tibble anyway there was a builtin work around to get the variables their own unique name.
+```{r, message=FALSE}
+off_stats_2018.df %>% as_tibble(.name_repair = "unique") %>% select(off_teams, everything()) ->off_stats_2018.df
+
+off_stats_2018.df
+```
+
+Now that the variables have their own unique names, they aren't very meaningful and don't really help us understand what they represent. Also, all variables are stored as characters which isn't useful for what we want to do going forward. We need the variables (excluding the team names) to be numbers. So what we are going to do next is first make are variables numeric then give them meaningful names.
+```{r, warning=FALSE}
+off_stats_2018.df  %>% mutate_at(vars(-off_teams),~str_replace(.,",","")) %>% 
+  mutate_at(vars(-off_teams),~as.numeric(.)) %>% as_tibble() %>% rename(Teams = off_teams, GP = Var.1 , Total_Yards =  Total...2, Yards_Per_Game = Total...3, Pass_Yards = Passing...4, Pass_YPG = Passing...5, Rush_Yards = Rushing...6, Rush_YPG = Rushing...7, PTS = Points...8, PTS_PER_GAME = Points...9) %>% slice(-1) -> m
+
+m
+```
+
+
+Now we must do the same for the defensive statistics. The same steps were taken for the defensive statistics and the final result was the same.
+```{r, warning=FALSE, echo=FALSE}
+def_stats_2018 <- html("https://www.espn.com/nfl/stats/team/_/view/defense/season/2018/seasontype/2")
+def_stats_2018 %>% html_nodes("table") %>%
+  
+  .[[2]] %>%
+  
+  html_table(fill=TRUE) -> def_stats_2018.df
+```
+
+```{r, echo=FALSE}
+def_teams <- c(" ","BAL", "BUF", "CHI", "MIN", "JAX", "PIT", "DAL", "TEN", "LAC", "DET", "IND", "HOU", "SF", "NO", "CAR", "SEA", "WSH", "GB", "LAR", "ARI", "NE", "DEN", "PHI", "NYG", "NYJ", "OAK", "TB", "ATL", "MIA", "CLE", "KC", "CIN")
+def_stats_2018.df %>% cbind(def_teams) -> def_stats_2018.df 
+
+def_stats_2018.df
+```
+
+```{r, message=FALSE}
+def_stats_2018.df %>% as_tibble(.name_repair = "unique") %>% select(def_teams, everything()) -> def_stats_2018.df #fixed
+
+def_stats_2018.df
+```
+
+```{r}
+n <- def_stats_2018.df %>% slice(-1) %>% mutate_at(vars(-def_teams),~str_replace(.,",","")) %>% 
+  mutate_at(vars(-def_teams),~as.numeric(.)) %>% as_tibble() %>% rename(Teams = def_teams, GP = Var.1 , Total_Yards =  Total...2, Yards_Per_Game = Total...3, Pass_Yards = Passing...4, Pass_YPG = Passing...5, Rush_Yards = Rushing...6, Rush_YPG = Rushing...7, PTS = Points...8, PTS_PER_GAME = Points...9)
+
+n
+```
+
+Now want to get the offensive and defensive statistics all in one place to make it easier for our analysis.
+```{r}
+all.stats <- off_stats_2018.df %>% left_join(def_stats_2018.df, by=c("off_teams"="def_teams"))
+
+all.stats
+```
+
+
+Now that we have all the statistics in one place we now need to inclcude how far each team progressed through the playoffs. This was measured on a scale from 0-5, 0 being a team not qualifying for the playoffs and 5 meaning they won the Super Bowl. Then we are going to attach that information to the dataframe we previous constructed by matching the teams abbreviations.
+```{r, warning=FALSE}
+nfl_teams <- tribble(
+~team_ab,~teams, ~playoff_round,
+"ARI","Arizona Cardinals", 0,
+"ATL","Atlanta Falcons", 0,
+"BAL","Baltimore Ravens", 1,
+"BUF","Buffalo Bills", 0,
+"CAR","Carolina Panthers", 0,
+"CHI","Chicago Bears", 1,
+"CIN","Cincinnati Bengals", 0,
+"CLE","Cleveland Browns", 0,
+"DAL","Dallas Cowboys", 2,
+"DEN","Denver Broncos", 0,
+"DET","Detroit Lions", 0,
+"GB","Green Bay Packers", 0,
+"HOU","Houston Texans", 1,
+"IND","Indianapolis Colts", 2,
+"JAX","Jacksonville Jaguars", 0,
+"KC","Kansas City Chiefs", 3,
+"LAC","Los Angeles Chargers", 2,
+"LAR","Los Angeles Rams", 4,
+"MIA","Miami Dolphins", 0,
+"MIN","Minnesota Vikings", 0,
+"NE","New England Patriots", 5,
+"NO","New Orleans Saints", 3,
+"NYG","New York Giants", 0,
+"NYJ","New York Jets", 0,
+"OAK","Oakland Raiders", 0,
+"PHI","Philadelphia Eagles", 2,
+"PIT","Pittsburgh Steelers", 0,
+"SF","San Francisco 49ers", 0,
+"SEA","Seattle Seahawks", 1,
+"TB","Tampa Bay Buccaneers", 0,
+"TEN","Tennessee Titans", 0,
+"WSH","Washington Redskins", 0)
+
+nfl_teams
+
+(all.stats <- all.stats %>% left_join(nfl_teams, by=c("off_teams"="team_ab")))
+```
+
+
+But now we see that we ran into the same problem as we did earlier, names of the variables not being correct and the information is stored as text. So we proceed as we did before, converting them to numeric values and renaming the variables.
+```{r}
+#all.stats
+
+# We know offensive stats came first then the defensive numbers
+
+all.stats.df <- all.stats %>% slice(-1) %>% mutate_at(vars(-off_teams),~str_replace(.,",","")) %>% 
+  mutate_at(vars(-off_teams, -teams),~as.numeric(.)) %>% as_tibble() %>% 
+  rename(Teams = off_teams, GP = Var.1.x , OFF_Total_Yards =  Total...2.x, OFF_Yards_Per_Game = Total...3.x, 
+         OFF_Pass_Yards = Passing...4.x, OFF_Pass_YPG = Passing...5.x, OFF_Rush_Yards = Rushing...6.x, OFF_Rush_YPG = Rushing...7.x, 
+         OFF_PTS = Points...8.x, OFF_PTS_PER_GAME = Points...9.x) %>%
+  
+  rename(DEF_GP = Var.1.y , DEF_Total_Yards =  Total...2.y, DEF_Yards_Per_Game = Total...3.y, 
+           DEF_Pass_Yards = Passing...4.y, DEF_Pass_YPG = Passing...5.y, DEF_Rush_Yards = Rushing...6.y, DEF_Rush_YPG = Rushing...7.y, 
+           DEF_PTS = Points...8.y, DEF_PTS_PER_GAME = Points...9.y)
+
+all.stats.df
+```
+
+
+Now keeping the variables we want to do our analysis on.
+```{r}
+all.stats.df <- all.stats.df %>% select(-c(GP, DEF_GP))
+
+all.stats.df
+```
+
+
+
+### For the next dataset:
+Now for the second half of our analysis we would need the outcomes of every regular season game from the 2018 regular season. Again this information is readily available but not as available as the regular season statistics. The website this data was scraped was footballdb.com. 
+```{r, message=FALSE, warning=FALSE}
+reg_season_results <- html("https://www.footballdb.com/games/index.html?lg=NFL&yr=2018")
+reg_season_results %>% html_nodes("table") %>% 
+  ##.[[1]] %>%
+  html_table(fill=TRUE) -> reg_season_results.df
+
+reg_season_results.df
+```
+
+This data also recquired a bit of work before it could be used in the analysis. When first viewed on the website the displayed table appeared with variables that had the dates of every game, the visiting team name, visiting team abbreviation, the visitor score, the home team name, the home team abbreviation, the home team score, a variable that recorded whether each game went to over time and a variable containing a link to the boxscores for each game. Though when loaded into R the information needed did make its way over but it was accompanied by some strange characters on boths ends of the names and scores and some variables not having names. So the first task at hand was to get rid of those unnecessary characters that were joined to our information. When the data was repaired to now be legible, some of the formatting misplaced the visiting and home team abbreviations by attching them to the team names, gave not detailed variable names to the visiting and home score and OT variables. So the next thing to fix was to repair the variable names and trying to get the team names by themselves. We started first with the home teams:
+
+```{r, message=FALSE}
+reg_season_results.df %>% map(~as_tibble(.,.name_repair = "unique")) %>% 
+  bind_rows() %>% 
+  separate(Home, into = c("HomeTeamName", "HomeTeamAB"), sep = "[A-Z]+$") -> reg_season_results.df
+
+reg_season_results.df
+```
+
+Next we did the same with the visiting team names:
+```{r}
+reg_season_results.df %>%  
+  bind_rows() %>% 
+  separate(Visitor, into = c("VisTeamName", "VisTeamAB"), sep = "[A-Z]+$") -> reg_season_results.df
+
+reg_season_results.df
+```
+In both cases we were able to get the names by themselves but in the process lost the abbreviations, but that wasn't a huge issue given the fact that they were not going to be used in our analysis. Next we wanted to keep just the variables that were actually going to be used in our analysis. We needed the team names, both home and visiting, and the respective scores for each team in all games. 
+
+```{r}
+#Now to get rid of the columns we don't need in the regular season data
+reg_season_results.df %>% 
+  select(-c(Date, Box, ...6, VisTeamAB, HomeTeamAB)) -> clean_reg_season_results.df
+
+clean_reg_season_results.df
+```
+
+Following the selecting of our variables we wanted to rename the score variables to make our dataframe look nicer and make the analysis a bit easier. 
+```{r}
+#Renaming variables in the dataframe for Vistor and Home scores
+clean_reg_season_results.df %>% 
+  rename(VisitorScore=...3 , HomeScore=...5) -> clean_reg_season_results.df
+
+clean_reg_season_results.df
+```
+
+Now one of (if not the only assumption that was made in this section of the analysis) was to get rid of the ties. Since we were planning on doing a logistic regression we required 1's and 0's to represent wins and losses so ties would've made the analysis a bit harder to deal with. So we filtered the games that had the visitors scored a different number of points than the home team. 
+```{r}
+# To get rid of ties
+clean_reg_season_results.df %>% filter(VisitorScore != HomeScore) -> clean_reg_season_results.df
+
+clean_reg_season_results.df
+```
+
+As stated earlier we wanted to perform a logistic regression on the wins and losses but assigning them a 1 if the home team won and a 0 if the road (visiting) team won, and labelled it result2. 
+
+```{r}
+# Calculating wins and losses
+clean_reg_season_results.df %>% 
+  mutate(result1 = ifelse(VisitorScore > HomeScore,1,0)) %>% 
+  mutate(result2 = 1-result1) -> clean_reg_season_results.df
+
+(clean_reg_season_results.df <- clean_reg_season_results.df %>% select(-result1) %>% rename(VisTeam = VisTeamName, HomeTeam=HomeTeamName)) 
+```
+Now when doing the cleaning of the data, we realized that this dataframe included all games from that season and not just the regular season which we wanted to work with. This was a relatively easy fix given that we just had to select the rows that pertained to regular season games.
+```{r}
+# Keeping the regular season results together
+clean_reg_season_results = clean_reg_season_results.df %>% slice(1:254) %>% as_tibble()
+clean_reg_season_results
+```
+
+
+
+
+## Analysis and results
+
+## Method 1 - Regression
+Now to try a regression with our new data.
+```{r}
+all.stats.1=lm(playoff_round~.-Teams-teams-OFF_Rush_Yards-DEF_Rush_Yards, data=all.stats.df)
+
+summary(all.stats.1)
+
+all.stats.2 <- step(all.stats.1, direction = "backward")
+
+summary(all.stats.2)
+```
+It is worth noting that here we would be dealing with multicollinearity. This is because the per game statisticsc would be roughly 16 times the total statistics in the various categories. To make the analysis easier on ourselves, we want to deal with just the per game data or else we would have explanatory variables that are perfectly linearly related. 
+
+Now to try a regression with just per game data then employ step to perform backward stepwise elimination to give us our final model.
+```{r}
+all.stats.3=lm(playoff_round~.-Teams-teams-OFF_Total_Yards-OFF_Pass_Yards-OFF_Rush_Yards-OFF_PTS-DEF_Total_Yards-DEF_Pass_Yards-DEF_Rush_Yards-DEF_PTS, data=all.stats.df)
+
+summary(all.stats.3)
+
+all.stats.4 <- step(all.stats.3, direction = "backward")
+
+summary(all.stats.4)
+```
+
+Now the numbers here tell a very interesting (and slightly obvious) story. First we can see that after all the work was done that even though defensive rushing yards per game was included in the model, it ended up not being significant. If we turn our attention to the final model the step function spit out we can see by the AIC that the model with no variables just beat out removing defensive rush yards per game. And if we were to run it again and again for lets say 1000 times there is the possibility that defensive rush yards per game would top taking out nothing. So before we move on let's examine DEF_Rush_YPG a little further.We know that confidence can be roughly constructed as follows: 
+$$\approx estimate\pm\ 2 \cdot \ se(estimate)$$ 
+So plugging in the values we have for the estimate and its standard error we have:
+$$0.02058 \pm\ 2\cdot\ (0.01508)$$
+Which would include both positive and negative values which isn't totally out of the realm of possibility given the fact that if the sign did turn out to be negative that's what we would've expected given the fact that if you hold the opposing team to few rushing yards then you would have a better chance of winning the game, because once you limit them rushing that means they would have to pass the ball more and once you've done that their plays become easier to predict so you can better prepare for them on defense. Staying on the topic of DEF_Rush_YPG, we can also conclude that with all else being equal that defensive rush yards per game doesn't really have anything else to add to the information given to us by offense and defensive points per game.
+
+
+Now to try a regression with just offensive points per game and defensive points per game.
+```{r}
+all.stats.5=lm(playoff_round~.-Teams-teams-OFF_Total_Yards-OFF_Pass_Yards-OFF_Rush_Yards-OFF_PTS-OFF_Yards_Per_Game-OFF_Pass_YPG-OFF_Rush_YPG
+               -DEF_Total_Yards-DEF_Pass_Yards-DEF_Rush_Yards-DEF_PTS-DEF_Yards_Per_Game-DEF_Pass_YPG-DEF_Rush_YPG,
+               data=all.stats.df)
+
+
+summary(all.stats.5)
+```
+After looking at the reseults of the final model we can see that on average if you score (roughly) 5 more points per game you would advance 1 additional round further in the playoffs. A similar story can be told on the other side of the ball, that on average if you give up 10 fewer points per game you would advance one additional round in the playoffs. 
+
+
+
+
+## Method 2 - Bradley Terry
+
+bradley-terry (home field adv)
+
+Now to run the Bradley Terry model on our data we need to take the wins and losses of each team and effectively make them 1s if a home team won and -1 if a home team lost. So in order to do so, we employed the use of model matrices. First we looked at all the match ups where the home team won and saved it in m1, then we looked at all the instances where the visiting team won and stored that information in m2. Now to calculate the matrix that we would actually run through Bradley Terry, we took m1 and subtracted m2 from it which in turn gave us -1s in every matchup where the home team lost and 1s every time the home team won.  
+
+```{r, results='hide'}
+m1 <- model.matrix(~HomeTeam-1, data = clean_reg_season_results)
+m1
+```
+
+
+```{r, results='hide'}
+m2 <- model.matrix(~VisTeam-1, data = clean_reg_season_results)
+m2
+```
+
+
+```{r, results='hide'}
+mm=m1-m2
+mm
+```
+
+The process of running a Bradley-Terry with a home field advantage is a form of logisitic regression, which is why it was so important to set up the model matrix in the corrrect manner. So in our regression function we are trying to predict the home team wins based on our provided model matrix.
+```{r}
+model.1 <- glm(clean_reg_season_results$result2~mm, family="binomial")
+summary(model.1)
+```
+From the output we can see that the intercept (home-field advantage) is positive which is what we would expect because in general for all sports, not just football, we would expect teams to play better at home than on the road. Another sort of imporant thing to note is that unlike most regressions, here testing for the intercept is interesting in the sense that the p-value is very, very close to zero and almost assuredly significant.
+
+
+Now to get the output in a form that is a little nicer to work with:
+```{r}
+model.1.df <- tidy(model.1)
+
+model.1.df
+```
+
+
+Now to manufacture a mini-data-frame and glue it on to what we already have since Washington was declared the baseline 0s are a little bit easier to interpret than NAs.
+```{r}
+wsh <- tribble(
+  ~term, ~estimate, ~std.error, ~statistic, ~p.value,
+  "mmHomeTeamWashington Redskins", 0, 0, 0, 0
+  
+)
+
+(model.1.df <- rbind(model.1.df, wsh))
+```
+
+
+Now what we want to turly asses is how accurate are the Bradley-Terry scores to an associated teams record. To do that we need a collection of all teams regular season record so we can match it with its BT score.
+```{r}
+# Creating a tribble of team names and records
+
+records <- tribble(
+  
+~team_ab,~teams, ~record,
+
+"ARI","Arizona Cardinals", "3-13",
+"ATL","Atlanta Falcons", "7-9",
+"BAL","Baltimore Ravens", "10-6",
+"BUF","Buffalo Bills", "6-10",
+"CAR","Carolina Panthers", "7-9",
+"CHI","Chicago Bears", "12-4",
+"CIN","Cincinnati Bengals", "6-10",
+"CLE","Cleveland Browns", "7-8-1",
+"DAL","Dallas Cowboys", "10-6",
+"DEN","Denver Broncos", "6-10",
+"DET","Detroit Lions", "6-10",
+"GB","Green Bay Packers", "6-9-1",
+"HOU","Houston Texans", "11-5",
+"IND","Indianapolis Colts", "10-6",
+"JAX","Jacksonville Jaguars", "5-11",
+"KC","Kansas City Chiefs", "12-4",
+"LAC","Los Angeles Chargers", "12-4",
+"LAR","Los Angeles Rams", "13-3",
+"MIA","Miami Dolphins", "7-9",
+"MIN","Minnesota Vikings", "8-7-1",
+"NE","New England Patriots", "11-5",
+"NO","New Orleans Saints", "13-3",
+"NYG","New York Giants", "5-11",
+"NYJ","New York Jets", "4-12",
+"OAK","Oakland Raiders", "4-12",
+"PHI","Philadelphia Eagles", "9-7",
+"PIT","Pittsburgh Steelers", "9-6-1",
+"SF","San Francisco 49ers", "4-12",
+"SEA","Seattle Seahawks", "10-6",
+"TB","Tampa Bay Buccaneers", "5-11",
+"TEN","Tennessee Titans", "9-7",
+"WSH","Washington Redskins", "7-9"
+)
+
+
+
+records
+
+```
+
+
+First to get actual team names so we can proceed with the join:
+```{r}
+(model.1.df %>%
+
+  extract(term, "team_name", "mmHomeTeam(.*)", remove=F) -> model.1.df.teams)
+```
+
+
+Now to match the records with the output from our Bradley Terry analysis:
+```{r}
+results <- model.1.df.teams %>%
+
+  left_join(records, by=c("team_name"="teams"))
+
+(results %>% replace_na(list(team_name="Home Field", team_ab="HF", record="Home Field")) -> results)
+```
+
+Now to arrange the estimates and compare them with the records:
+```{r}
+results %>% arrange(desc(estimate)) %>% select(team_name, estimate, record, everything()) %>% 
+  select(-(term))
+```
+From our tidy table above eyeballing the records and BT scores of each team we can see that teams with a good record for the most part have a strong Bradley-Terry score and vice-versa teams with bad records tended to have lower Bradley-Terry scores. To get a flavour for what these numbers mean lets look at some potential matchups starting with the Rams and the Saints. We can see based on their Bradley-Terry scores and their repsective records that they are both strong teams. Since these values are on the log odds scale we would need to use 
+$$p = \frac{1}{1+e^{-d}} $$
+to compute actual win probabilities. First we will look at if the Saints are at home to Rams then vice-versa.
+```{r}
+Saints = results$estimate[23]
+
+Rams = results$estimate[19]
+
+HF = results$estimate[1]
+
+d = Saints - Rams + HF
+
+p = 1/(1+exp(1)^(-d))
+
+p
+```
+This means that even though the Rams may have a stronger BT score, the Saints would still be favoured at home.
+```{r}
+d = Rams - Saints + HF
+
+p = 1/(1+exp(1)^(-d))
+
+p
+```
+By the same token when the Rams are at home they would be favoured to win. This is due to the fact that our home field advantage (our intercept) is rather large so when two equally matched strong (or weak teams) match up the home team will be favoured in both cases to win.
+
+Where this really gets interesting is if we observe any sort of mismatch i.e. a strong team travels to face a weaker team on the road. Take for example the Los Angeles Chargers going on the road to face the Baltimore Ravens. 
+
+```{r}
+Chargers = results$estimate[18]
+
+Ravens = results$estimate[4]
+
+d = Ravens - Chargers + HF
+
+p = 1/(1+exp(1)^(-d))
+
+p
+```
+We can see that even though the Chargers were the visiting team in this matchup, they were still favoured to win.
+
+
+
+
+
+## Conclusion and Discussion
+
+
+  In the end, our final model for the regression ended up including just offensive points per game and defensive points per game. Interpreting the model, it pretty much is saying if you score more than your opponent or your defense is able to hold your opponent to less points than you score, you will progress further in the playoffs. This was not shocking because it is a known fact that above all else to win a sports match of any kind you have to either outscore your opponent, or force your opponent to score less than you. For as long as I've payed attention to football, they said defense wins championships and if you can run the football effectively you keep the opposing offense off of the field so they can't score. So the first half was true but I really did think more rushing variables would've been included. The results I observed weren't shocking but I did think they would've told a less direct story. 
+
+  The Bradley-Terry analysis was so much fun to play with. Seeing how big the home field advantage was and seeing how it really played a part in different kinds of matchups. Like the examples above, when we had two (roughly) equally matched teams, the home field made the difference when figuring out who was favoured. Or a team had to be a lot weaker than the visiting team they were going to be playing in order to be underdogs at home. We did observe that teams that had a high BT score did indeed have a good to great regular season record. This is due to the fact that the NFL encourages parity, so they try their best to balance the schedule out for the teams that did well during the previous season by "rewarding" them with a slightly tougher schedule. That's why a lot of people marvel in the fact that some teams have been able to sustain success given the fact that the league tried to work against it. In the future where I would go from here would be to use these estimates that I have are to use them to predict the outcomes of the postseason games from this season and see how close the predicted outcomes are to what actually played out in real life from this season.
+
+  The analysis that was conducted over these past few weeks didn't teach me a lot but it did confirm a lot of things I had already suspected about the NFL. When you want to win games and progress in the playoffs you essentially have to score more points than your opponenets do. That's not news to me or anyone that pays attention to the sport, but at least now I have evidence that supports it. It's almost the same story with the Bradley Terry analysis, we can see that if you win a lot of games during the regular season, then most of the time you are a pretty strong team going into the playoffs. Again upsets can always happen but if you are at home and have a decent amount of wins you would be favoured in your first round matchup. 
+
+
+
+
+
